@@ -65,6 +65,8 @@ type testCase struct {
 	expectedResult error
 	// Expected keys in the notifyMap
 	expectedKeys []string
+	// Expected objects after the test runs
+	expectedObjects []runtime.Object
 }
 
 const (
@@ -834,7 +836,7 @@ func TestSyncPvcWithOutPopulatorPod(t *testing.T) {
 			expectedKeys:     []string{pvcPrimeKey, pvKey},
 		},
 		{
-			name:         "Clean up populator pod and pvcPrime",
+			name:         "Clean up pvcPrime",
 			key:          "pvc/" + testPvcNamespace + "/" + testPvcName,
 			pvcNamespace: testPvcNamespace,
 			pvcName:      testPvcName,
