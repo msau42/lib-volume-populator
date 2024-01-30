@@ -58,14 +58,15 @@ import (
 )
 
 const (
-	populatorContainerName  = "populate"
-	populatorPodPrefix      = "populate"
-	populatorPodVolumeName  = "target"
-	populatorPvcPrefix      = "prime"
-	populatedFromAnnoSuffix = "populated-from"
-	pvcFinalizerSuffix      = "populate-target-protection"
-	annSelectedNode         = "volume.kubernetes.io/selected-node"
-	controllerNameSuffix    = "populator"
+	populatorContainerName      = "populate"
+	populatorPodPrefix          = "populate"
+	populatorStorageClassPrefix = "populate"
+	populatorPodVolumeName      = "target"
+	populatorPvcPrefix          = "prime"
+	populatedFromAnnoSuffix     = "populated-from"
+	pvcFinalizerSuffix          = "populate-target-protection"
+	annSelectedNode             = "volume.kubernetes.io/selected-node"
+	controllerNameSuffix        = "populator"
 
 	reasonPodCreationError              = "PopulatorCreationError"
 	reasonPodCreationSuccess            = "PopulatorCreated"
@@ -554,13 +555,36 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 	}
 
 	// Look for the populator pod
-	podName := fmt.Sprintf("%s-%s", populatorPodPrefix, pvc.UID)
-	c.addNotification(key, "pod", c.populatorNamespace, podName)
 	var pod *corev1.Pod
-	pod, err = c.podLister.Pods(c.populatorNamespace).Get(podName)
-	if err != nil {
-		if !errors.IsNotFound(err) {
-			return err
+	podName := fmt.Sprintf("%s-%s", populatorPodPrefix, pvc.UID)
+	if c.usePod {
+		c.addNotification(key, "pod", c.populatorNamespace, podName)
+		pod, err = c.podLister.Pods(c.populatorNamespace).Get(podName)
+		if err != nil {
+			if !errors.IsNotFound(err) {
+				return err
+			}
+		}
+	}
+
+	// If populate data without populator pod, and orginal StorageClass's VolumeBindingMode is VolumeBindingWaitForFirstConsumer,
+	// create a StorageClass with VolumeBindingImmediate for pvcPrime
+	scName := *pvc.Spec.StorageClassName
+	if !c.usePod && storageClass.VolumeBindingMode != nil && storagev1.VolumeBindingWaitForFirstConsumer == *storageClass.VolumeBindingMode {
+		scName = populatorStorageClassPrefix + "-" + *pvc.Spec.StorageClassName
+		scPrime, err := c.scLister.Get(scName)
+		if err != nil {
+			if !errors.IsNotFound(err) {
+				return err
+			}
+			c.addNotification(key, "sc", "", scName)
+			scPrime = storageClass.DeepCopy()
+			scPrime.Name = scName
+			bm := storagev1.VolumeBindingImmediate
+			scPrime.VolumeBindingMode = &bm
+			c.kubeClient.StorageV1().StorageClasses().Create(ctx, scPrime, metav1.CreateOptions{})
+			// We'll get called again later when the storage class exists
+			return nil
 		}
 	}
 
@@ -586,7 +610,7 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 			Spec: corev1.PersistentVolumeClaimSpec{
 				AccessModes:      pvc.Spec.AccessModes,
 				Resources:        pvc.Spec.Resources,
-				StorageClassName: pvc.Spec.StorageClassName,
+				StorageClassName: &scName,
 				VolumeMode:       pvc.Spec.VolumeMode,
 			},
 		}
