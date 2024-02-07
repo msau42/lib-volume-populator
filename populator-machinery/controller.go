@@ -624,6 +624,8 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 			c.recorder.Eventf(pvc, corev1.EventTypeWarning, reasonPVCCreationError, "Failed to create populator PVC: %s", err)
 			return err
 		}
+		// We'll get called again later when the PVC' exists
+		return nil
 	}
 
 	// If the PVC is unbound, we need to perform the population
