@@ -123,6 +123,7 @@ type PopulatorParams struct {
 	StorageClass *storagev1.StorageClass
 	PvcPrime     *corev1.PersistentVolumeClaim
 	Pvc          *corev1.PersistentVolumeClaim
+	Unstructured *unstructured.Unstructured
 }
 
 func RunController(masterURL, kubeconfig, imageName, httpEndpoint, metricsPath, namespace, prefix string,
@@ -582,7 +583,10 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 			scPrime.Name = scName
 			bm := storagev1.VolumeBindingImmediate
 			scPrime.VolumeBindingMode = &bm
-			c.kubeClient.StorageV1().StorageClasses().Create(ctx, scPrime, metav1.CreateOptions{})
+			_, err = c.kubeClient.StorageV1().StorageClasses().Create(ctx, scPrime, metav1.CreateOptions{})
+			if err != nil {
+				return err
+			}
 			// We'll get called again later when the storage class exists
 			return nil
 		}
@@ -634,6 +638,7 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 		StorageClass: storageClass,
 		Pvc:          pvc,
 		PvcPrime:     pvcPrime,
+		Unstructured: unstructured,
 	}
 	if "" == pvc.Spec.VolumeName {
 
