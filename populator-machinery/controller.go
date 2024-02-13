@@ -570,20 +570,30 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 
 	// If populate data without populator pod, and orginal StorageClass's VolumeBindingMode is VolumeBindingWaitForFirstConsumer,
 	// create a StorageClass with VolumeBindingImmediate for pvcPrime
-	scName := *pvc.Spec.StorageClassName
+	storageClassPrimeName := *pvc.Spec.StorageClassName
 	if !c.usePod && storageClass.VolumeBindingMode != nil && storagev1.VolumeBindingWaitForFirstConsumer == *storageClass.VolumeBindingMode {
-		scName = populatorStorageClassPrefix + "-" + *pvc.Spec.StorageClassName
-		scPrime, err := c.scLister.Get(scName)
+		storageClassPrimeName = populatorStorageClassPrefix + "-" + *pvc.Spec.StorageClassName
+		scPrime, err := c.scLister.Get(storageClassPrimeName)
 		if err != nil {
 			if !errors.IsNotFound(err) {
 				return err
 			}
-			c.addNotification(key, "sc", "", scName)
-			scPrime = storageClass.DeepCopy()
-			scPrime.Name = scName
+			c.addNotification(key, "sc", "", storageClassPrimeName)
 			bm := storagev1.VolumeBindingImmediate
-			scPrime.VolumeBindingMode = &bm
-			_, err = c.kubeClient.StorageV1().StorageClasses().Create(ctx, scPrime, metav1.CreateOptions{})
+			scPrime = &storagev1.StorageClass{
+				ObjectMeta:           metav1.ObjectMeta{Name: storageClassPrimeName},
+				Provisioner:          storageClass.Provisioner,
+				Parameters:           storageClass.Parameters,
+				ReclaimPolicy:        storageClass.ReclaimPolicy,
+				MountOptions:         storageClass.MountOptions,
+				AllowVolumeExpansion: storageClass.AllowVolumeExpansion,
+				VolumeBindingMode:    &bm,
+				AllowedTopologies:    storageClass.AllowedTopologies,
+			}
+			if storageClass.Parameters != nil && storageClass.Parameters["volumeBindingMode"] != "" {
+				scPrime.Parameters["volumeBindingMode"] = string(bm)
+			}
+			scPrime, err = c.kubeClient.StorageV1().StorageClasses().Create(ctx, scPrime, metav1.CreateOptions{})
 			if err != nil {
 				return err
 			}
@@ -614,7 +624,7 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 			Spec: corev1.PersistentVolumeClaimSpec{
 				AccessModes:      pvc.Spec.AccessModes,
 				Resources:        pvc.Spec.Resources,
-				StorageClassName: &scName,
+				StorageClassName: &storageClassPrimeName,
 				VolumeMode:       pvc.Spec.VolumeMode,
 			},
 		}
