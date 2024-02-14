@@ -58,9 +58,9 @@ type testCase struct {
 	// Boolean flag which determines whether or not a populator pod will be created
 	usePod bool
 	// Data population function, invoked when the usePod variable is set to false
-	populate func(*PopulatorParams) (bool, error)
+	populate func(context.Context, *PopulatorParams) (bool, error)
 	// Data population completeness check function,invoked when the usePod variable is set to false
-	populateComplete func(*PopulatorParams) (bool, error)
+	populateComplete func(context.Context, *PopulatorParams) (bool, error)
 	// Expected errors
 	expectedResult error
 	// Expected keys in the notifyMap
@@ -181,31 +181,31 @@ func pv(pvcName, pvcNamespace, pvcUid string) *v1.PersistentVolume {
 	}
 }
 
-func populateOperationStartError(*PopulatorParams) (bool, error) {
+func populateOperationStartError(ctx context.Context, p *PopulatorParams) (bool, error) {
 	return false, fmt.Errorf(testPopulationOperationStartFailed)
 }
 
-func PopulateOperationNotStart(*PopulatorParams) (bool, error) {
+func PopulateOperationNotStart(ctx context.Context, p *PopulatorParams) (bool, error) {
 	return false, nil
 }
 
-func PopulateOperationStartSuccess(*PopulatorParams) (bool, error) {
+func PopulateOperationStartSuccess(ctx context.Context, p *PopulatorParams) (bool, error) {
 	return true, nil
 }
 
-func populateCompleteError(*PopulatorParams) (bool, error) {
+func populateCompleteError(ctx context.Context, p *PopulatorParams) (bool, error) {
 	return false, fmt.Errorf(testPopulateCompleteFailed)
 }
 
-func populateNotComplete(*PopulatorParams) (bool, error) {
+func populateNotComplete(ctx context.Context, p *PopulatorParams) (bool, error) {
 	return false, nil
 }
 
-func populateCompleteSuccess(*PopulatorParams) (bool, error) {
+func populateCompleteSuccess(ctx context.Context, p *PopulatorParams) (bool, error) {
 	return true, nil
 }
 
-func initTest(usePod bool, populate func(*PopulatorParams) (bool, error), populateComplete func(*PopulatorParams) (bool, error)) (
+func initTest(usePod bool, populate func(context.Context, *PopulatorParams) (bool, error), populateComplete func(context.Context, *PopulatorParams) (bool, error)) (
 	*controller,
 	informercorev1.PersistentVolumeClaimInformer,
 	cache.SharedIndexInformer,

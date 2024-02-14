@@ -114,8 +114,8 @@ type controller struct {
 	referenceGrantLister referenceGrantv1beta1.ReferenceGrantLister
 	referenceGrantSynced cache.InformerSynced
 	usePod               bool
-	populate             func(*PopulatorParams) (bool, error)
-	populateComplete     func(*PopulatorParams) (bool, error)
+	populate             func(context.Context, *PopulatorParams) (bool, error)
+	populateComplete     func(context.Context, *PopulatorParams) (bool, error)
 }
 
 type PopulatorParams struct {
@@ -137,8 +137,8 @@ func RunController(masterURL, kubeconfig, imageName, httpEndpoint, metricsPath, 
 func RunControllerV2(masterURL, kubeconfig, imageName, httpEndpoint, metricsPath, namespace, prefix string,
 	gk schema.GroupKind, gvr schema.GroupVersionResource, mountPath, devicePath string,
 	populatorArgs func(bool, *unstructured.Unstructured) ([]string, error), usePod bool,
-	populate func(*PopulatorParams) (bool, error),
-	populateComplete func(*PopulatorParams) (bool, error),
+	populate func(context.Context, *PopulatorParams) (bool, error),
+	populateComplete func(context.Context, *PopulatorParams) (bool, error),
 ) {
 	klog.Infof("Starting populator controller for %s", gk)
 
@@ -719,7 +719,7 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 				return nil
 			}
 		} else {
-			operationStart, err := c.populate(params)
+			operationStart, err := c.populate(ctx, params)
 			if err != nil {
 				c.recorder.Eventf(pvc, corev1.EventTypeWarning, reasonPopulateOperationStartError, "Failed to start populate operation: %s", err)
 				return err
@@ -745,7 +745,7 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 				return nil
 			}
 		} else {
-			complete, err := c.populateComplete(params)
+			complete, err := c.populateComplete(ctx, params)
 			if err != nil {
 				return err
 			}
