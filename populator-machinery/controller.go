@@ -114,9 +114,13 @@ type controller struct {
 	recorder             record.EventRecorder
 	referenceGrantLister referenceGrantv1beta1.ReferenceGrantLister
 	referenceGrantSynced cache.InformerSynced
-	useProviderImpl      bool
-	populate             func(context.Context, *PopulatorParams) error
-	populateComplete     func(context.Context, *PopulatorParams) (bool, error)
+	// Boolean flag which determines whether or not to use cloud provider specific data populate functions
+	useProviderImpl bool
+	// Data population function, invoked when the useProviderImpl variable is set to true
+	populate func(context.Context, *PopulatorParams) error
+	// Data population completeness check function, return true when data transfer gets completed.
+	// Invoked when the useProviderImpl variable is set to true
+	populateComplete func(context.Context, *PopulatorParams) (bool, error)
 }
 
 type PopulatorParams struct {
@@ -569,6 +573,7 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 		}
 	}
 
+	// TODO: Clean up StroageClass prime when the original StorageClass gets deleted
 	// If populate data with cloud provider implementation, and orginal StorageClass's VolumeBindingMode is VolumeBindingWaitForFirstConsumer,
 	// create a StorageClass with VolumeBindingImmediate for pvcPrime
 	storageClassPrimeName := *pvc.Spec.StorageClassName

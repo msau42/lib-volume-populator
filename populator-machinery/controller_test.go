@@ -55,11 +55,11 @@ type testCase struct {
 
 	// Object to insert into fake kubeclient/dynClient/gatewayClient before the test starts
 	initialObjects []runtime.Object
-	// Boolean flag which determines whether or not a populator pod will be created
+	// Boolean flag which determines whether or not to use cloud provider specific data populate functions
 	useProviderImpl bool
-	// Data population function, invoked when the usePod variable is set to false
+	// Data population function, invoked when the useProviderImpl variable is set to true
 	populate func(context.Context, *PopulatorParams) error
-	// Data population completeness check function,invoked when the usePod variable is set to false
+	// Data population completeness check function, invoked when the useProviderImpl variable is set to true
 	populateComplete func(context.Context, *PopulatorParams) (bool, error)
 	// Expected errors
 	expectedResult error
