@@ -66,6 +66,7 @@ const (
 	populatedFromAnnoSuffix     = "populated-from"
 	pvcFinalizerSuffix          = "populate-target-protection"
 	annSelectedNode             = "volume.kubernetes.io/selected-node"
+	annStorageClassPrime        = "volume-populator/storage-class-prime"
 	controllerNameSuffix        = "populator"
 
 	reasonPodCreationError              = "PopulatorCreationError"
@@ -113,8 +114,8 @@ type controller struct {
 	recorder             record.EventRecorder
 	referenceGrantLister referenceGrantv1beta1.ReferenceGrantLister
 	referenceGrantSynced cache.InformerSynced
-	usePod               bool
-	populate             func(context.Context, *PopulatorParams) (bool, error)
+	useProviderImpl      bool
+	populate             func(context.Context, *PopulatorParams) error
 	populateComplete     func(context.Context, *PopulatorParams) (bool, error)
 }
 
@@ -136,8 +137,8 @@ func RunController(masterURL, kubeconfig, imageName, httpEndpoint, metricsPath, 
 
 func RunControllerV2(masterURL, kubeconfig, imageName, httpEndpoint, metricsPath, namespace, prefix string,
 	gk schema.GroupKind, gvr schema.GroupVersionResource, mountPath, devicePath string,
-	populatorArgs func(bool, *unstructured.Unstructured) ([]string, error), usePod bool,
-	populate func(context.Context, *PopulatorParams) (bool, error),
+	populatorArgs func(bool, *unstructured.Unstructured) ([]string, error), useProviderImpl bool,
+	populate func(context.Context, *PopulatorParams) error,
 	populateComplete func(context.Context, *PopulatorParams) (bool, error),
 ) {
 	klog.Infof("Starting populator controller for %s", gk)
@@ -211,7 +212,7 @@ func RunControllerV2(masterURL, kubeconfig, imageName, httpEndpoint, metricsPath
 		recorder:             getRecorder(kubeClient, prefix+"-"+controllerNameSuffix),
 		referenceGrantLister: referenceGrants.Lister(),
 		referenceGrantSynced: referenceGrants.Informer().HasSynced,
-		usePod:               usePod,
+		useProviderImpl:      useProviderImpl,
 		populate:             populate,
 		populateComplete:     populateComplete,
 	}
@@ -558,7 +559,7 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 	// Look for the populator pod
 	var pod *corev1.Pod
 	podName := fmt.Sprintf("%s-%s", populatorPodPrefix, pvc.UID)
-	if c.usePod {
+	if !c.useProviderImpl {
 		c.addNotification(key, "pod", c.populatorNamespace, podName)
 		pod, err = c.podLister.Pods(c.populatorNamespace).Get(podName)
 		if err != nil {
@@ -568,11 +569,11 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 		}
 	}
 
-	// If populate data without populator pod, and orginal StorageClass's VolumeBindingMode is VolumeBindingWaitForFirstConsumer,
+	// If populate data with cloud provider implementation, and orginal StorageClass's VolumeBindingMode is VolumeBindingWaitForFirstConsumer,
 	// create a StorageClass with VolumeBindingImmediate for pvcPrime
 	storageClassPrimeName := *pvc.Spec.StorageClassName
-	if !c.usePod && storageClass.VolumeBindingMode != nil && storagev1.VolumeBindingWaitForFirstConsumer == *storageClass.VolumeBindingMode {
-		storageClassPrimeName = populatorStorageClassPrefix + "-" + *pvc.Spec.StorageClassName
+	if c.useProviderImpl && storageClass.VolumeBindingMode != nil && storagev1.VolumeBindingWaitForFirstConsumer == *storageClass.VolumeBindingMode {
+		storageClassPrimeName = fmt.Sprintf("%s-%s", populatorStorageClassPrefix, *pvc.Spec.StorageClassName)
 		scPrime, err := c.scLister.Get(storageClassPrimeName)
 		if err != nil {
 			if !errors.IsNotFound(err) {
@@ -581,7 +582,10 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 			c.addNotification(key, "sc", "", storageClassPrimeName)
 			bm := storagev1.VolumeBindingImmediate
 			scPrime = &storagev1.StorageClass{
-				ObjectMeta:           metav1.ObjectMeta{Name: storageClassPrimeName},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        storageClassPrimeName,
+					Annotations: map[string]string{},
+				},
 				Provisioner:          storageClass.Provisioner,
 				Parameters:           storageClass.Parameters,
 				ReclaimPolicy:        storageClass.ReclaimPolicy,
@@ -590,10 +594,11 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 				VolumeBindingMode:    &bm,
 				AllowedTopologies:    storageClass.AllowedTopologies,
 			}
+			scPrime.ObjectMeta.Annotations[annStorageClassPrime] = storageClassPrimeName
 			if storageClass.Parameters != nil && storageClass.Parameters["volumeBindingMode"] != "" {
 				scPrime.Parameters["volumeBindingMode"] = string(bm)
 			}
-			scPrime, err = c.kubeClient.StorageV1().StorageClasses().Create(ctx, scPrime, metav1.CreateOptions{})
+			_, err = c.kubeClient.StorageV1().StorageClasses().Create(ctx, scPrime, metav1.CreateOptions{})
 			if err != nil {
 				return err
 			}
@@ -661,9 +666,18 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 		// Record start time for populator metric
 		c.metrics.operationStart(pvc.UID)
 
-		// If a pod is required for data population, proceed with pod creation. Otherwise, invoke the populate() function to transfer the data
-		if c.usePod {
-
+		// If use cloud provider specific implementation, invoke the populate() function. Otherwise, proceed with pod creation.
+		if c.useProviderImpl {
+			if "" == pvcPrime.Spec.VolumeName {
+				// We'll get called again later when the pvc prime gets bounded
+				return nil
+			}
+			err := c.populate(ctx, params)
+			if err != nil {
+				c.recorder.Eventf(pvc, corev1.EventTypeWarning, reasonPopulateOperationStartError, "Failed to start populate operation: %s", err)
+				return err
+			}
+		} else {
 			// If the pod doesn't exist yet, create it
 			if pod == nil {
 				var rawBlock bool
@@ -718,20 +732,18 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 				// We'll get called again later when the pod exists
 				return nil
 			}
-		} else {
-			operationStart, err := c.populate(ctx, params)
-			if err != nil {
-				c.recorder.Eventf(pvc, corev1.EventTypeWarning, reasonPopulateOperationStartError, "Failed to start populate operation: %s", err)
-				return err
-			}
-			if !operationStart {
-				c.recorder.Eventf(pvc, corev1.EventTypeNormal, reasonPopulateOperationStartSuccess, "Populator started")
-				// We'll get called again later when the population operation exists
-				return nil
-			}
 		}
 
-		if c.usePod {
+		if c.useProviderImpl {
+			complete, err := c.populateComplete(ctx, params)
+			if err != nil {
+				return err
+			}
+			if !complete {
+				// We'll get called again later when the population operation complete
+				return nil
+			}
+		} else {
 			if corev1.PodSucceeded != pod.Status.Phase {
 				if corev1.PodFailed == pod.Status.Phase {
 					c.recorder.Eventf(pvc, corev1.EventTypeWarning, reasonPodFailed, "Populator failed: %s", pod.Status.Message)
@@ -742,15 +754,6 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 					}
 				}
 				// We'll get called again later when the pod succeeds
-				return nil
-			}
-		} else {
-			complete, err := c.populateComplete(ctx, params)
-			if err != nil {
-				return err
-			}
-			if !complete {
-				// We'll get called again later when the population operation complete
 				return nil
 			}
 		}
@@ -821,7 +824,7 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 	// *** At this point the volume population is done and we're just cleaning up ***
 	c.recorder.Eventf(pvc, corev1.EventTypeNormal, reasonPodFinished, "Populator finished")
 
-	if c.usePod {
+	if !c.useProviderImpl {
 		// If the pod still exists, delete it
 		if pod != nil {
 			err = c.kubeClient.CoreV1().Pods(c.populatorNamespace).Delete(ctx, pod.Name, metav1.DeleteOptions{})
