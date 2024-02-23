@@ -574,6 +574,7 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 	}
 
 	// TODO: Clean up StroageClass prime when the original StorageClass gets deleted
+	// TODO: Add finializer to ensure user doesn't delete the SCPrime
 	// If populate data with cloud provider implementation, and orginal StorageClass's VolumeBindingMode is VolumeBindingWaitForFirstConsumer,
 	// create a StorageClass with VolumeBindingImmediate for pvcPrime. Otherwise, pv will not get provisioned since we will not create the
 	// populator pod
@@ -599,11 +600,10 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 				VolumeBindingMode:    &bm,
 				AllowedTopologies:    storageClass.AllowedTopologies,
 			}
-			scPrime.ObjectMeta.Annotations[annStorageClassPrime] = storageClassPrimeName
 			if storageClass.Parameters != nil && storageClass.Parameters["volumeBindingMode"] != "" {
 				scPrime.Parameters["volumeBindingMode"] = string(bm)
 			}
-			_, err = c.kubeClient.StorageV1().StorageClasses().Create(ctx, scPrime, metav1.CreateOptions{})
+			scPrime, err = c.kubeClient.StorageV1().StorageClasses().Create(ctx, scPrime, metav1.CreateOptions{})
 			if err != nil {
 				c.addNotification(key, "sc", "", storageClassPrimeName)
 				return err
@@ -642,13 +642,11 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 				annSelectedNode: nodeName,
 			}
 		}
-		_, err = c.kubeClient.CoreV1().PersistentVolumeClaims(c.populatorNamespace).Create(ctx, pvcPrime, metav1.CreateOptions{})
+		pvcPrime, err = c.kubeClient.CoreV1().PersistentVolumeClaims(c.populatorNamespace).Create(ctx, pvcPrime, metav1.CreateOptions{})
 		if err != nil {
 			c.recorder.Eventf(pvc, corev1.EventTypeWarning, reasonPVCCreationError, "Failed to create populator PVC: %s", err)
 			return err
 		}
-		// We'll get called again later when the PVC' exists
-		return nil
 	}
 
 	// If the PVC is unbound, we need to perform the population
