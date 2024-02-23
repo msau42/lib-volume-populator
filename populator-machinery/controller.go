@@ -575,7 +575,8 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 
 	// TODO: Clean up StroageClass prime when the original StorageClass gets deleted
 	// If populate data with cloud provider implementation, and orginal StorageClass's VolumeBindingMode is VolumeBindingWaitForFirstConsumer,
-	// create a StorageClass with VolumeBindingImmediate for pvcPrime
+	// create a StorageClass with VolumeBindingImmediate for pvcPrime. Otherwise, pv will not get provisioned since we will not create the
+	// populator pod
 	storageClassPrimeName := *pvc.Spec.StorageClassName
 	if c.useProviderImpl && storageClass.VolumeBindingMode != nil && storagev1.VolumeBindingWaitForFirstConsumer == *storageClass.VolumeBindingMode {
 		storageClassPrimeName = fmt.Sprintf("%s-%s", populatorStorageClassPrefix, *pvc.Spec.StorageClassName)
@@ -584,7 +585,6 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 			if !errors.IsNotFound(err) {
 				return err
 			}
-			c.addNotification(key, "sc", "", storageClassPrimeName)
 			bm := storagev1.VolumeBindingImmediate
 			scPrime = &storagev1.StorageClass{
 				ObjectMeta: metav1.ObjectMeta{
@@ -605,10 +605,9 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 			}
 			_, err = c.kubeClient.StorageV1().StorageClasses().Create(ctx, scPrime, metav1.CreateOptions{})
 			if err != nil {
+				c.addNotification(key, "sc", "", storageClassPrimeName)
 				return err
 			}
-			// We'll get called again later when the storage class exists
-			return nil
 		}
 	}
 

@@ -708,21 +708,6 @@ func TestSyncPvcWithCloudProviderImplementation(t *testing.T) {
 			expectedKeys:    []string{},
 		},
 		{
-			name:         "Create StorageClass prime",
-			key:          "pvc/" + testPvcNamespace + "/" + testPvcName,
-			pvcNamespace: testPvcNamespace,
-			pvcName:      testPvcName,
-			initialObjects: []runtime.Object{
-				pvc(testPvcName, testPvcNamespace, testNodeName, testStorageClassName, "",
-					dsf(testApiGroup, testDatasourceKind, testDataSourceName, testPvcNamespace), ""),
-				ust(),
-				sc(testStorageClassName, storagev1.VolumeBindingWaitForFirstConsumer),
-			},
-			useProviderImpl: true,
-			expectedResult:  nil,
-			expectedKeys:    []string{scPrimeKey},
-		},
-		{
 			name:         "Create PVC prime",
 			key:          "pvc/" + testPvcNamespace + "/" + testPvcName,
 			pvcNamespace: testPvcNamespace,
