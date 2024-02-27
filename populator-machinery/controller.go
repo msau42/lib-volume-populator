@@ -1,5 +1,5 @@
 /*
-Copyright 2021 The Kubernetes Authors.
+Copyright 2024 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -114,13 +114,31 @@ type controller struct {
 	recorder             record.EventRecorder
 	referenceGrantLister referenceGrantv1beta1.ReferenceGrantLister
 	referenceGrantSynced cache.InformerSynced
+	useProviderImpl      bool
+	populate             func(context.Context, *PopulatorParams) error
+	populateComplete     func(context.Context, *PopulatorParams) (bool, error)
+}
+
+type VolumePopulatorConfig struct {
+	MasterURL     string
+	Kubeconfig    string
+	ImageName     string
+	HttpEndpoint  string
+	MetricsPath   string
+	Namespace     string
+	Prefix        string
+	Gk            schema.GroupKind
+	Gvr           schema.GroupVersionResource
+	MountPath     string
+	DevicePath    string
+	PopulatorArgs func(bool, *unstructured.Unstructured) ([]string, error)
 	// Boolean flag which determines whether or not to use cloud provider specific data populate functions
-	useProviderImpl bool
+	UseProviderImpl bool
 	// Data population function, invoked when the useProviderImpl variable is set to true
-	populate func(context.Context, *PopulatorParams) error
+	Populate func(context.Context, *PopulatorParams) error
 	// Data population completeness check function, return true when data transfer gets completed.
 	// Invoked when the useProviderImpl variable is set to true
-	populateComplete func(context.Context, *PopulatorParams) (bool, error)
+	PopulateComplete func(context.Context, *PopulatorParams) (bool, error)
 }
 
 type PopulatorParams struct {
@@ -135,17 +153,26 @@ func RunController(masterURL, kubeconfig, imageName, httpEndpoint, metricsPath, 
 	gk schema.GroupKind, gvr schema.GroupVersionResource, mountPath, devicePath string,
 	populatorArgs func(bool, *unstructured.Unstructured) ([]string, error),
 ) {
-	RunControllerV2(masterURL, kubeconfig, imageName, httpEndpoint, metricsPath, namespace, prefix, gk, gvr, mountPath, devicePath, populatorArgs,
-		true, nil, nil)
+	vpcfg := &VolumePopulatorConfig{
+		MasterURL:       masterURL,
+		Kubeconfig:      kubeconfig,
+		ImageName:       imageName,
+		HttpEndpoint:    httpEndpoint,
+		MetricsPath:     metricsPath,
+		Namespace:       namespace,
+		Prefix:          prefix,
+		Gk:              gk,
+		Gvr:             gvr,
+		MountPath:       mountPath,
+		DevicePath:      devicePath,
+		PopulatorArgs:   populatorArgs,
+		UseProviderImpl: false,
+	}
+	RunControllerWithConfig(vpcfg)
 }
 
-func RunControllerV2(masterURL, kubeconfig, imageName, httpEndpoint, metricsPath, namespace, prefix string,
-	gk schema.GroupKind, gvr schema.GroupVersionResource, mountPath, devicePath string,
-	populatorArgs func(bool, *unstructured.Unstructured) ([]string, error), useProviderImpl bool,
-	populate func(context.Context, *PopulatorParams) error,
-	populateComplete func(context.Context, *PopulatorParams) (bool, error),
-) {
-	klog.Infof("Starting populator controller for %s", gk)
+func RunControllerWithConfig(vpcfg *VolumePopulatorConfig) {
+	klog.Infof("Starting populator controller for %s", vpcfg.Gk)
 
 	stopCh := make(chan struct{})
 	sigCh := make(chan os.Signal, 2)
@@ -157,7 +184,7 @@ func RunControllerV2(masterURL, kubeconfig, imageName, httpEndpoint, metricsPath
 		os.Exit(1) // second signal. Exit directly.
 	}()
 
-	cfg, err := clientcmd.BuildConfigFromFlags(masterURL, kubeconfig)
+	cfg, err := clientcmd.BuildConfigFromFlags(vpcfg.MasterURL, vpcfg.Kubeconfig)
 	if err != nil {
 		klog.Fatalf("Failed to create config: %v", err)
 	}
@@ -184,19 +211,19 @@ func RunControllerV2(masterURL, kubeconfig, imageName, httpEndpoint, metricsPath
 	pvInformer := kubeInformerFactory.Core().V1().PersistentVolumes()
 	podInformer := kubeInformerFactory.Core().V1().Pods()
 	scInformer := kubeInformerFactory.Storage().V1().StorageClasses()
-	unstInformer := dynInformerFactory.ForResource(gvr).Informer()
+	unstInformer := dynInformerFactory.ForResource(vpcfg.Gvr).Informer()
 
 	gatewayInformerFactory := gatewayInformers.NewSharedInformerFactory(gatewayClient, time.Second*30)
 	referenceGrants := gatewayInformerFactory.Gateway().V1beta1().ReferenceGrants()
 
 	c := &controller{
 		kubeClient:           kubeClient,
-		imageName:            imageName,
-		populatorNamespace:   namespace,
-		devicePath:           devicePath,
-		mountPath:            mountPath,
-		populatedFromAnno:    prefix + "/" + populatedFromAnnoSuffix,
-		pvcFinalizer:         prefix + "/" + pvcFinalizerSuffix,
+		imageName:            vpcfg.ImageName,
+		populatorNamespace:   vpcfg.Namespace,
+		devicePath:           vpcfg.DevicePath,
+		mountPath:            vpcfg.MountPath,
+		populatedFromAnno:    vpcfg.Prefix + "/" + populatedFromAnnoSuffix,
+		pvcFinalizer:         vpcfg.Prefix + "/" + pvcFinalizerSuffix,
 		pvcLister:            pvcInformer.Lister(),
 		pvcSynced:            pvcInformer.Informer().HasSynced,
 		pvLister:             pvInformer.Lister(),
@@ -205,23 +232,23 @@ func RunControllerV2(masterURL, kubeconfig, imageName, httpEndpoint, metricsPath
 		podSynced:            podInformer.Informer().HasSynced,
 		scLister:             scInformer.Lister(),
 		scSynced:             scInformer.Informer().HasSynced,
-		unstLister:           dynamiclister.New(unstInformer.GetIndexer(), gvr),
+		unstLister:           dynamiclister.New(unstInformer.GetIndexer(), vpcfg.Gvr),
 		unstSynced:           unstInformer.HasSynced,
 		notifyMap:            make(map[string]*stringSet),
 		cleanupMap:           make(map[string]*stringSet),
 		workqueue:            workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter()),
-		populatorArgs:        populatorArgs,
-		gk:                   gk,
+		populatorArgs:        vpcfg.PopulatorArgs,
+		gk:                   vpcfg.Gk,
 		metrics:              initMetrics(),
-		recorder:             getRecorder(kubeClient, prefix+"-"+controllerNameSuffix),
+		recorder:             getRecorder(kubeClient, vpcfg.Prefix+"-"+controllerNameSuffix),
 		referenceGrantLister: referenceGrants.Lister(),
 		referenceGrantSynced: referenceGrants.Informer().HasSynced,
-		useProviderImpl:      useProviderImpl,
-		populate:             populate,
-		populateComplete:     populateComplete,
+		useProviderImpl:      vpcfg.UseProviderImpl,
+		populate:             vpcfg.Populate,
+		populateComplete:     vpcfg.PopulateComplete,
 	}
 
-	c.metrics.startListener(httpEndpoint, metricsPath)
+	c.metrics.startListener(vpcfg.HttpEndpoint, vpcfg.MetricsPath)
 	defer c.metrics.stopListener()
 
 	pvcInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
