@@ -117,6 +117,7 @@ type controller struct {
 	useProviderImpl      bool
 	populate             func(context.Context, *PopulatorParams) error
 	populateComplete     func(context.Context, *PopulatorParams) (bool, error)
+	provisionFn          func(context.Context, PopulatorParams) error
 }
 
 type VolumePopulatorConfig struct {
@@ -139,6 +140,10 @@ type VolumePopulatorConfig struct {
 	// Data population completeness check function, return true when data transfer gets completed.
 	// Invoked when the useProviderImpl variable is set to true
 	PopulateComplete func(context.Context, *PopulatorParams) (bool, error)
+	// TODO msau
+	// Method for populators that want to provision and populate in the same call. This will skip all the PVC' logic.
+	// For POC, the ProvisionFn is responsible for creating the PV object bound to the PVC.
+	ProvisionFn func(context.Context, PopulatorParams) error
 }
 
 type PopulatorParams struct {
@@ -246,6 +251,7 @@ func RunControllerWithConfig(vpcfg *VolumePopulatorConfig) {
 		useProviderImpl:      vpcfg.UseProviderImpl,
 		populate:             vpcfg.Populate,
 		populateComplete:     vpcfg.PopulateComplete,
+		provisionFn:          vpcfg.ProvisionFn,
 	}
 
 	c.metrics.startListener(vpcfg.HttpEndpoint, vpcfg.MetricsPath)
@@ -585,6 +591,26 @@ func (c *controller) syncPvc(ctx context.Context, key, pvcNamespace, pvcName str
 				return nil
 			}
 		}
+	}
+
+	// TODO: msau
+	if c.provisionFn != nil {
+		wuweiParams := PopulatorParams{
+			KubeClient:   c.kubeClient,
+			StorageClass: storageClass,
+			Pvc:          pvc,
+			Unstructured: unstructured,
+		}
+		err := c.provisionFn(ctx, wuweiParams)
+		if err != nil {
+			c.recorder.Eventf(pvc, corev1.EventTypeWarning, reasonPopulateOperationStartError, "Failed to start provisioning operation: %s", err)
+			return err
+		}
+		c.recorder.Eventf(pvc, corev1.EventTypeNormal, reasonPodFinished, "Populator finished")
+		// Clean up our internal callback maps
+		c.cleanupNotifications(key)
+
+		return nil
 	}
 
 	// Look for the populator pod
