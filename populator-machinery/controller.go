@@ -324,7 +324,7 @@ func RunControllerWithConfig(vpcfg *VolumePopulatorConfig) {
 
 	kubeInformerFactory.Start(stopCh)
 	dynInformerFactory.Start(stopCh)
-	gatewayInformerFactory.Start(stopCh)
+	// gatewayInformerFactory.Start(stopCh)
 
 	if err = c.run(stopCh); err != nil {
 		klog.Fatalf("Failed to run controller: %v", err)
@@ -450,7 +450,7 @@ func (c *controller) run(stopCh <-chan struct{}) error {
 	defer utilruntime.HandleCrash()
 	defer c.workqueue.ShutDown()
 
-	ok := cache.WaitForCacheSync(stopCh, c.pvcSynced, c.pvSynced, c.podSynced, c.scSynced, c.unstSynced, c.referenceGrantSynced)
+	ok := cache.WaitForCacheSync(stopCh, c.pvcSynced, c.pvSynced, c.podSynced, c.scSynced, c.unstSynced)
 	if !ok {
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
